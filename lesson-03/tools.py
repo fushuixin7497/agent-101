@@ -242,7 +242,7 @@ TOOL_REGISTRY: Dict[str, ToolFunc] = {
 }
 
 # 为教学演示，提供一个"误用模式"开关
-ENABLE_MISLEADING_TOOL = False
+ENABLE_MISLEADING_TOOL = True
 
 
 def get_tools() -> List[Dict[str, Any]]:
