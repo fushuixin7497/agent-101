@@ -150,26 +150,60 @@ class ContextManager:
         return self.last_compression_info
 
     # --------------------------------------------------------
+    # 消息分组工具：保证 tool_calls / tool 消息成对
+    # --------------------------------------------------------
+    def _split_system_and_dynamic(self):
+        """分离 system prompt 和动态消息。"""
+        if self.messages and self.messages[0].get("role") == "system":
+            return [self.messages[0]], self.messages[1:]
+        return [], self.messages[:]
+
+    def _build_units(self, dynamic: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """
+        把动态消息分成不可拆分的单元。
+        关键：assistant 带 tool_calls 时，必须和它后面的 tool 消息作为一个单元。
+        """
+        units = []
+        i = 0
+        while i < len(dynamic):
+            msg = dynamic[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                group = [msg]
+                j = i + 1
+                while j < len(dynamic) and dynamic[j].get("role") == "tool":
+                    group.append(dynamic[j])
+                    j += 1
+                units.append(group)
+                i = j
+            else:
+                units.append([msg])
+                i += 1
+        return units
+
+    def _units_to_messages(self, units: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return [m for unit in units for m in unit]
+
+    # --------------------------------------------------------
     # 策略 1：截断
     # --------------------------------------------------------
     def _truncate(self):
         """
-        丢弃最老的消息，直到 token 数低于阈值。
+        丢弃最老的消息单元，直到 token 数低于阈值。
         永远保留 system prompt（第一条）。
+        如果只剩一个单元也超限，则对该单元做简单截断（通常不会出现）。
         """
-        system = []
-        if self.messages and self.messages[0].get("role") == "system":
-            system = [self.messages[0]]
-            dynamic = self.messages[1:]
-        else:
-            dynamic = self.messages[:]
+        system, dynamic = self._split_system_and_dynamic()
+        units = self._build_units(dynamic)
 
-        # 保留 system 后，从最早一条动态消息开始删
-        while dynamic and estimate_messages_tokens(system + dynamic) > self.max_tokens:
-            removed = dynamic.pop(0)
-            self.last_compression_info["detail"] += f"[截断] {removed.get('role')}\n"
+        # 从最早单元开始删除
+        while units and estimate_messages_tokens(
+            system + self._units_to_messages(units)
+        ) > self.max_tokens:
+            removed = units.pop(0)
+            roles = ", ".join(m.get("role") for m in removed)
+            self.last_compression_info["detail"] += f"[截断] {roles}\n"
 
-        self.messages = system + dynamic
+        self.messages = system + self._units_to_messages(units)
 
     # --------------------------------------------------------
     # 策略 2：摘要
@@ -177,26 +211,24 @@ class ContextManager:
     def _summarize(self):
         """
         把早期对话发给模型生成摘要，然后用摘要消息替换原始消息。
-        保留 system + 最近 2 轮对话 + 摘要。
+        保留 system + 最近若干完整单元 + 摘要。
         """
-        system = []
-        if self.messages and self.messages[0].get("role") == "system":
-            system = [self.messages[0]]
-            dynamic = self.messages[1:]
-        else:
-            dynamic = self.messages[:]
+        system, dynamic = self._split_system_and_dynamic()
+        units = self._build_units(dynamic)
 
-        # 最近 2 轮（4 条消息：user/assistant/tool... 大致保留末尾）不摘要
-        keep_recent = 4
-        to_summarize = dynamic[:-keep_recent] if len(dynamic) > keep_recent else []
-        recent = dynamic[-keep_recent:] if len(dynamic) > keep_recent else dynamic[:]
+        # 最近 2 个单元不摘要，避免切到 tool_calls 一半
+        keep_recent = 2
+        to_summarize = units[:-keep_recent] if len(units) > keep_recent else []
+        recent = units[-keep_recent:] if len(units) > keep_recent else units[:]
 
         if not to_summarize:
             # 消息不多，直接截断兜底
             self._truncate()
             return
 
-        summary_text = self._call_llm_for_summary(to_summarize)
+        summary_text = self._call_llm_for_summary(
+            self._units_to_messages(to_summarize)
+        )
         summary_message = {
             "role": "user",
             "content": (
@@ -205,9 +237,9 @@ class ContextManager:
             ),
         }
 
-        self.messages = system + [summary_message] + recent
+        self.messages = system + [summary_message] + self._units_to_messages(recent)
         self.last_compression_info["detail"] = (
-            f"[摘要] 将 {len(to_summarize)} 条早期消息压缩为 1 条摘要"
+            f"[摘要] 将 {len(to_summarize)} 个单元压缩为 1 条摘要"
         )
 
     def _call_llm_for_summary(self, messages: List[Dict[str, Any]]) -> str:
@@ -261,28 +293,26 @@ class ContextManager:
     def _dump_to_memory(self):
         """
         把早期对话写入本地文件，messages 里只保留一条引用。
-        保留 system + 最近 2 轮 + 引用。
+        保留 system + 最近若干完整单元 + 引用。
         """
-        system = []
-        if self.messages and self.messages[0].get("role") == "system":
-            system = [self.messages[0]]
-            dynamic = self.messages[1:]
-        else:
-            dynamic = self.messages[:]
+        system, dynamic = self._split_system_and_dynamic()
+        units = self._build_units(dynamic)
 
-        keep_recent = 4
-        to_store = dynamic[:-keep_recent] if len(dynamic) > keep_recent else []
-        recent = dynamic[-keep_recent:] if len(dynamic) > keep_recent else dynamic[:]
+        keep_recent = 2
+        to_store = units[:-keep_recent] if len(units) > keep_recent else []
+        recent = units[-keep_recent:] if len(units) > keep_recent else units[:]
 
         if not to_store:
             self._truncate()
             return
 
+        to_store_messages = self._units_to_messages(to_store)
+
         os.makedirs(os.path.dirname(self.memory_path), exist_ok=True)
         try:
             with open(self.memory_path, "w", encoding="utf-8") as f:
                 f.write("# Lesson-04 外置记忆\n\n")
-                for i, m in enumerate(to_store, 1):
+                for i, m in enumerate(to_store_messages, 1):
                     f.write(f"## 消息 {i} [{m.get('role')}]\n\n")
                     f.write(json.dumps(m, ensure_ascii=False, indent=2))
                     f.write("\n\n")
@@ -300,7 +330,7 @@ class ContextManager:
             ),
         }
 
-        self.messages = system + [memory_message] + recent
+        self.messages = system + [memory_message] + self._units_to_messages(recent)
         self.last_compression_info["detail"] = (
-            f"[外置记忆] 将 {len(to_store)} 条早期消息写入 {self.memory_path}"
+            f"[外置记忆] 将 {len(to_store_messages)} 条早期消息写入 {self.memory_path}"
         )
