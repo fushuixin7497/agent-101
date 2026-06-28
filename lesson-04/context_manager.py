@@ -217,7 +217,7 @@ class ContextManager:
         units = self._build_units(dynamic)
 
         # 最近 2 个单元不摘要，避免切到 tool_calls 一半
-        keep_recent = 2
+        keep_recent = 1
         to_summarize = units[:-keep_recent] if len(units) > keep_recent else []
         recent = units[-keep_recent:] if len(units) > keep_recent else units[:]
 
@@ -294,19 +294,62 @@ class ContextManager:
         """
         把早期对话写入本地文件，messages 里只保留一条引用。
         保留 system + 最近若干完整单元 + 引用。
+        
+        关键改进：如果单元内有超长 tool 结果（>1000字），
+        把 tool 内容外置到文件，只保留引用路径。
         """
         system, dynamic = self._split_system_and_dynamic()
         units = self._build_units(dynamic)
 
-        keep_recent = 2
+        keep_recent = 1
         to_store = units[:-keep_recent] if len(units) > keep_recent else []
         recent = units[-keep_recent:] if len(units) > keep_recent else units[:]
 
-        if not to_store:
+        if not to_store and not recent:
             self._truncate()
             return
 
-        to_store_messages = self._units_to_messages(to_store)
+        # 收集所有需要外置的消息（包括 recent 里的超长内容）
+        all_messages_to_store = []
+        
+        # 处理 to_store：全部外置
+        for unit in to_store:
+            for m in unit:
+                all_messages_to_store.append(m)
+        
+        # 处理 recent：只外置超长的 tool 结果，保留 assistant 和短消息
+        recent_messages = []
+        for unit in recent:
+            new_unit = []
+            for m in unit:
+                content = m.get("content", "")
+                if m.get("role") == "tool" and len(content) > 1000:
+                    # 超长 tool 结果外置
+                    tool_ref_path = f"{self.memory_path}.tool_{m.get('tool_call_id', 'unknown')}.txt"
+                    try:
+                        with open(tool_ref_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        # 替换为引用消息
+                        new_unit.append({
+                            "role": "tool",
+                            "tool_call_id": m.get("tool_call_id", ""),
+                            "name": m.get("name", ""),
+                            "content": f"[内容已外置到文件：{tool_ref_path}，如需完整内容请读取该文件]"
+                        })
+                        all_messages_to_store.append({
+                            "role": "tool",
+                            "tool_call_id": m.get("tool_call_id", ""),
+                            "name": m.get("name", ""),
+                            "content": content  # 完整内容存入记忆文件
+                        })
+                    except Exception as e:
+                        print(f"⚠️ tool 结果外置失败: {e}")
+                        new_unit.append(m)
+                else:
+                    new_unit.append(m)
+            recent_messages.extend(new_unit)
+
+        to_store_messages = all_messages_to_store
 
         os.makedirs(os.path.dirname(self.memory_path), exist_ok=True)
         try:
@@ -321,16 +364,30 @@ class ContextManager:
             self._truncate()
             return
 
+        # 从外置内容中提取关键摘要（前 200 字），让模型至少知道之前发生了什么
+        summary = ""
+        for m in to_store_messages:
+            content = m.get("content", "")
+            if len(content) > 200:
+                summary += content[:200] + "...\n"
+            else:
+                summary += content + "\n"
+        summary = summary.strip()[:500]  # 摘要不超过 500 字
+
         memory_message = {
             "role": "user",
             "content": (
-                "早期对话已写入外置记忆文件，当前不再完整保留。"
-                f"如需参考请读取：{self.memory_path}\n"
-                "请继续基于已有信息和后续问题作答。"
+                "由于上下文过长，此前对话已写入外置记忆文件。"
+                f"文件路径：{self.memory_path}\n"
+                "重要：如果后续问题涉及之前对话中的任何内容（如文件内容、数据、编号等），"
+                "你必须先调用 read_file 读取该文件，再基于文件内容作答。"
+                "不要凭记忆回答，因为你当前看不到完整内容。\n\n"
+                "此前对话摘要（不完整，仅供参考）：\n"
+                f"{summary}"
             ),
         }
 
-        self.messages = system + [memory_message] + self._units_to_messages(recent)
+        self.messages = system + [memory_message] + recent_messages
         self.last_compression_info["detail"] = (
-            f"[外置记忆] 将 {len(to_store_messages)} 条早期消息写入 {self.memory_path}"
+            f"[外置记忆] 将 {len(to_store_messages)} 条消息写入 {self.memory_path}"
         )
