@@ -63,6 +63,10 @@ def read_file(filepath: str, offset: int = 1, limit: int = 20) -> str:
         return "错误：offset 必须是 >=1 的整数"
     if not isinstance(limit, int) or limit < 1 or limit > 500:
         return "错误：limit 必须是 1~500 的整数"
+    
+    # 强制限制单次读取行数，防止 context 循环膨胀
+    if limit > 30:
+        limit = 30
 
     abs_path = os.path.abspath(os.path.expanduser(filepath))
     home = os.path.expanduser("~")
@@ -355,7 +359,7 @@ def get_tools() -> List[Dict[str, Any]]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "读取行数，默认 20，最大 500",
+                            "description": "读取行数，默认 20，最大 30",
                         },
                     },
                     "required": ["filepath"],
