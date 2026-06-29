@@ -50,10 +50,10 @@ def calculator(expression: str) -> str:
     return f"计算结果：{expression} = {result}"
 
 
-def read_file(filepath: str, offset: int = 1, limit: int = 100) -> str:
+def read_file(filepath: str, offset: int = 1, limit: int = 20) -> str:
     """
     【规范示例】参数带约束说明：
-    "读取本地文本文件内容。可指定起始行 offset 和读取行数 limit（最大 500 行）。
+    "读取本地文本文件内容。可指定起始行 offset 和读取行数 limit（最大 500 行，默认 20 行）。
      适用于查看代码、日志、配置文件。不支持读取二进制文件。"
     """
     # 参数校验
@@ -355,7 +355,7 @@ def get_tools() -> List[Dict[str, Any]]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "读取行数，默认 100，最大 500",
+                            "description": "读取行数，默认 20，最大 500",
                         },
                     },
                     "required": ["filepath"],
