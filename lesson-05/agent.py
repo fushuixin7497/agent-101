@@ -221,10 +221,12 @@ def agent_loop(user_input: str, injector: ErrorInjector = None) -> str:
                     args = corrected_args
 
                 # 执行工具（支持错误注入）
+                # 注意：使用 tools.execute_tool 模块路径，确保 injector 的 patch 生效
+                import tools as _tools_module
                 if injector and not injector.is_clean():
-                    result = injector.run_with_injection(execute_tool, func_name, args)
+                    result = injector.run_with_injection(_tools_module.execute_tool, func_name, args)
                 else:
-                    result = execute_tool(func_name, args)
+                    result = _tools_module.execute_tool(func_name, args)
 
                 # Harness：丰富错误信息
                 if result.startswith("错误：") or result.startswith("❌"):
