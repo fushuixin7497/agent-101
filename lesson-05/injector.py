@@ -144,7 +144,7 @@ class ErrorInjector:
         # 创建注入版 execute_tool
         def injected_execute_tool(name: str, arguments: dict) -> str:
             # 检查是否有未知工具注入
-            if self._inject_unknown_tool and random.random() < 0.5:
+            if self._inject_unknown_tool:
                 name = self._inject_unknown_tool
                 self._inject_unknown_tool = None
 
