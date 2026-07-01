@@ -69,7 +69,7 @@ TEST_SCENARIOS = [
     },
     {
         "name": "部分失败恢复",
-        "injector_preset": "partial",
+        "injector_preset": "partial_failure",
         "user_input": "读取文件 ~/test.txt",
         "expect_harness_action": "记录错误",
         "description": "3 个调用中 1 个失败应记录并继续",
