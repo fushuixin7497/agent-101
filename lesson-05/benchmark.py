@@ -45,17 +45,19 @@ SYSTEM_PROMPT = (
 TEST_SCENARIOS = [
     {
         "name": "死循环检测",
-        "injector_preset": "dead_loop",
+        "injector_preset": None,
         "user_input": "搜索我的主目录",
         "expect_harness_action": "检测到死循环",
         "description": "连续 3 次相同调用应被检测并打断",
+        "test_type": "direct",  # 直接测试 Harness 单元逻辑
     },
     {
         "name": "未知工具拦截",
         "injector_preset": "unknown_tool",
-        "user_input": "调用 magic_spell 工具",
+        "user_input": "用 flaky_tool 查询数据库",
         "expect_harness_action": "未知工具",
         "description": "未知工具调用应被拦截并返回可用列表",
+        "test_type": "agent",
     },
     {
         "name": "参数越界修正",
@@ -63,6 +65,7 @@ TEST_SCENARIOS = [
         "user_input": "读取文件 ~/test.txt limit=100",
         "expect_harness_action": "参数修正",
         "description": "limit=100 应被自动修正为 30",
+        "test_type": "agent",
     },
     {
         "name": "部分失败恢复",
@@ -70,6 +73,7 @@ TEST_SCENARIOS = [
         "user_input": "读取文件 ~/test.txt",
         "expect_harness_action": "记录错误",
         "description": "3 个调用中 1 个失败应记录并继续",
+        "test_type": "agent",
     },
     {
         "name": "限流重试",
@@ -77,6 +81,7 @@ TEST_SCENARIOS = [
         "user_input": "用 flaky_tool 查询数据库",
         "expect_harness_action": "重试",
         "description": "429 错误应触发指数退避重试",
+        "test_type": "agent",
     },
     {
         "name": "正常执行",
@@ -84,6 +89,7 @@ TEST_SCENARIOS = [
         "user_input": "计算 365 * 24",
         "expect_harness_action": "正常完成",
         "description": "无错误注入时应正常完成",
+        "test_type": "agent",
     },
 ]
 
@@ -99,6 +105,10 @@ def run_single_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
     if not API_KEY:
         return {"status": "SKIP", "reason": "未设置 LLM_API_KEY"}
+
+    # 死循环检测：直接测试 Harness 单元逻辑，不依赖模型行为
+    if scenario.get("test_type") == "direct":
+        return _test_dead_loop_direct(scenario)
 
     # 准备注入器
     injector = None
@@ -283,6 +293,59 @@ def run_single_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         "harness_action": harness_action,
         "steps": step,
         "errors": status_report["total_errors"],
+        "result": result[:200],
+    }
+
+
+def _test_dead_loop_direct(scenario: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    直接测试死循环检测 Harness 单元逻辑。
+    
+    不依赖模型行为，直接模拟模型连续调用相同工具的场景。
+    """
+    print("   🧪 直接测试 Harness 死循环检测逻辑（不调用模型）")
+    
+    harness = AgentHarness(max_steps=10, repeat_threshold=3)
+    
+    # 模拟连续 3 次相同的工具调用
+    tool_calls = [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "search_files",
+                "arguments": '{"directory": "~", "keyword": "."}'
+            }
+        }
+    ]
+    
+    harness_triggered = False
+    harness_action = ""
+    result = ""
+    
+    for step in range(1, 5):
+        print(f"   Step {step}: 模拟调用 search_files(directory='~', keyword='.')")
+        dead_loop_msg = harness.check_dead_loop(step, tool_calls)
+        if dead_loop_msg:
+            print(f"   🛑 Harness 触发: {dead_loop_msg}")
+            harness_triggered = True
+            harness_action = "死循环检测"
+            result = dead_loop_msg
+            break
+    
+    if not harness_triggered:
+        print("   ⚠️ 死循环检测未触发（异常）")
+        result = "死循环检测未触发"
+    
+    passed = harness_triggered and "检测到死循环" in harness_action
+    
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "scenario": scenario["name"],
+        "harness_triggered": harness_triggered,
+        "harness_action": harness_action,
+        "steps": step if harness_triggered else 4,
+        "errors": 0,
         "result": result[:200],
     }
 
