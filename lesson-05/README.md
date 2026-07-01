@@ -50,47 +50,159 @@ lesson-05/
 
 ## 四、运行
 
-### 1. 交互式 Agent
+查看 6 种防护效果，有两种方式：**交互式注入**和**自动验证**。
+
+### 方式 1：交互式注入（逐个体验）
+
+在 `~/learn-agent/lesson-05` 目录下，每次测试前设置 `INJECT_ERRORS` 环境变量，然后启动 agent。
+
+#### 1. 死循环检测
 
 ```bash
-cd ~/learn-agent/lesson-05
-export LLM_API_KEY="sk-xxxxx"
-export LLM_BASE_URL="https://api.moonshot.cn/v1"
-export LLM_MODEL="moonshot-v1-8k"
-
-uv run python agent.py
-```
-
-### 2. 启用错误注入测试
-
-```bash
-# 死循环场景
 export INJECT_ERRORS=dead_loop
 uv run python agent.py
+```
 
-# 部分失败场景
-export INJECT_ERRORS=partial
-uv run python agent.py
+输入：
+```
+搜索我的主目录
+```
 
-# 限流场景
-export INJECT_ERRORS=rate_limit
-uv run python agent.py
+观察：
+- 模型调用 `search_files`
+- 连续 3 次相同调用后
+- 终端显示：`🛑 检测到死循环：连续 3 步调用相同工具组合 [...]`
 
-# 未知工具场景
+#### 2. 未知工具拦截
+
+```bash
 export INJECT_ERRORS=unknown_tool
-uv run python agent.py
-
-# 全部叠加
-export INJECT_ERRORS=all
 uv run python agent.py
 ```
 
-### 3. 自动验证
+输入：
+```
+用 flaky_tool 查询数据库
+```
+
+观察：
+- 模型调用 `flaky_tool`（合法工具）
+- Injector 替换为 `magic_spell`（非法工具）
+- Harness 拦截：`❌ 错误：未知工具 'magic_spell'`
+- 返回可用工具列表，模型修正为合法工具
+
+**注意**：不要直接输入"调用 magic_spell 工具"，因为模型会从 system prompt 知道可用工具列表，直接拒绝而不调用。Injector 的作用是在模型调用**合法工具**时偷偷替换为非法工具名，这样才能测试 Harness 的拦截能力。
+
+#### 3. 参数修正（无需注入，直接测试）
+
+```bash
+unset INJECT_ERRORS
+uv run python agent.py
+```
+
+输入：
+```
+读取文件 ~/test.txt limit=100
+```
+
+观察：
+- 模型传 `limit=100`
+- Harness 修正：`⚠️ 参数修正：limit=100 超过最大限制 30，已自动调整为 30`
+- 工具正常执行
+
+#### 4. 限流重试
+
+```bash
+export INJECT_ERRORS=rate_limit
+uv run python agent.py
+```
+
+输入：
+```
+用 flaky_tool 查询数据库
+```
+
+观察：
+- API 返回 429
+- Harness 等待 2 秒后重试
+- 再失败等待 4 秒，再失败等待 8 秒
+- 3 次后放弃，返回友好错误
+
+#### 5. 部分失败恢复
+
+```bash
+export INJECT_ERRORS=partial
+uv run python agent.py
+```
+
+输入：
+```
+读取文件 ~/test.txt
+```
+
+观察：
+- 多个工具调用中，某个返回错误
+- Harness 记录错误，继续执行其他
+- 最终返回部分结果 + 错误提示
+
+#### 6. 目标偏离（无需注入，观察自然行为）
+
+```bash
+unset INJECT_ERRORS
+uv run python agent.py
+```
+
+输入：
+```
+生成50段超长文本
+```
+
+观察：
+- 如果模型跑偏去调用 `search_files`
+- Harness 输出：`⚠️ 目标偏离警告：用户目标是 '生成50段超长文本'，但当前调用 'search_files' 可能不直接相关`
+
+### 方式 2：自动验证（一键看全部）
 
 ```bash
 export LLM_API_KEY="sk-xxxxx"
 uv run python benchmark.py
 ```
+
+自动运行 6 个场景，输出汇总表格：
+
+```
+📊 验证结果汇总
+场景                  状态    Harness      步数    错误数
+死循环检测            ✅ PASS  是           3       0
+未知工具拦截          ✅ PASS  是           2       1
+参数越界修正          ✅ PASS  是           1       0
+部分失败恢复          ✅ PASS  是           4       1
+限流重试              ✅ PASS  是           5       0
+正常执行              ✅ PASS  否           1       0
+```
+
+### 推荐流程
+
+先跑 **benchmark** 看整体效果，再挑感兴趣的单个场景用 **交互式** 深入观察：
+
+```bash
+# 1. 先看自动验证结果
+cd ~/learn-agent/lesson-05
+export LLM_API_KEY="sk-xxxxx"
+uv run python benchmark.py
+
+# 2. 再逐个体验
+export INJECT_ERRORS=dead_loop
+uv run python agent.py
+# 输入：搜索我的主目录
+
+# 3. 换下一个
+export INJECT_ERRORS=rate_limit
+uv run python agent.py
+# 输入：用 flaky_tool 查询数据库
+```
+
+**注意**：`INJECT_ERRORS` 环境变量只在当前终端有效，关掉窗口或新开标签页需要重新设置。
 
 ---
 
