@@ -77,7 +77,7 @@ TEST_SCENARIOS = [
     },
     {
         "name": "限流重试",
-        "injector_preset": "rate_limit",
+        "injector_preset": "rate_limit_burst",
         "user_input": "用 flaky_tool 查询数据库",
         "expect_harness_action": "重试",
         "description": "429 错误应触发指数退避重试",
